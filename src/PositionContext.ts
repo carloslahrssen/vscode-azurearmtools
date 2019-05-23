@@ -207,9 +207,9 @@ export class PositionContext {
                         // The caret is between the function name and the left parenthesis
                         this._completionItems = PositionContext.getFunctionCompletions("", this.emptySpanAtDocumentCharacterIndex);
                     } else {
-                        if (tleValue.nameToken.stringValue === "parameters" && tleValue.argumentExpressions.length === 0) {
+                        if (tleValue.isBuiltin("parameters") && tleValue.argumentExpressions.length === 0) {
                             this._completionItems = Promise.resolve(this.getParameterCompletions("", tleValue));
-                        } else if (tleValue.nameToken.stringValue === "variables" && tleValue.argumentExpressions.length === 0) {
+                        } else if (tleValue.isBuiltin("variables") && tleValue.argumentExpressions.length === 0) {
                             this._completionItems = Promise.resolve(this.getVariableCompletions("", tleValue));
                         } else {
                             this._completionItems = PositionContext.getFunctionCompletions("", this.emptySpanAtDocumentCharacterIndex);

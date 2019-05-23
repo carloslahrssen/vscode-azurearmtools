@@ -5,7 +5,9 @@
 // tslint:disable:no-unused-expression max-func-body-length promise-function-async max-line-length
 
 import * as assert from "assert";
-import { DeploymentTemplate, Histogram, IncorrectArgumentsCountIssue, Json, Language, ParameterDefinition, Reference, ReferenceInVariableDefinitionJSONVisitor, UnrecognizedFunctionIssue } from "../extension.bundle";
+import { DeploymentTemplate, Histogram, IncorrectArgumentsCountIssue, Json, Language, ParameterDefinition, Reference, ReferenceInVariableDefinitionJSONVisitor } from "../extension.bundle";
+import { UnrecognizedUserFunctionIssue, UnrecognizedUserNamespaceIssue } from "../src/UnrecognizedFunctionIssue";
+import { InvalidFunctionContextIssue } from "../src/InvalidFunctionContextIssue";
 
 suite("DeploymentTemplate", () => {
     suite("constructor(string)", () => {
@@ -236,10 +238,130 @@ suite("DeploymentTemplate", () => {
             });
         });
 
-        test("with one unrecognized function error deployment template", () => {
-            const dt = new DeploymentTemplate("{ 'name': '[blah(\"test\")]' }", "id");
+        test("with one unrecognized user namespace error deployment template", () => {
+            const dt = new DeploymentTemplate("{ \"name\": \"[namespace.blah('test')]\" }", "id");
             const expectedErrors = [
-                new UnrecognizedFunctionIssue(new Language.Span(12, 4), "blah")
+                new UnrecognizedUserNamespaceIssue(new Language.Span(12, 9), "namespace")
+            ];
+            return dt.errors.then((errors: Language.Issue[]) => {
+                assert.deepStrictEqual(errors, expectedErrors);
+            });
+        });
+
+        test("with one unrecognized function error deployment template", () => {
+            const dt = new DeploymentTemplate(
+                `{ "name": \"[contoso.blah('prefix')]\",
+                    "functions": [
+                       {
+                         "namespace": "contoso",
+                         "members": {
+                           "uniqueName": {
+                             "parameters": [
+                               {
+                                 "name": "namePrefix",
+                                 "type": "string"
+                               }
+                             ],
+                             // asdf "output": {
+                                //   "type": "string",
+                                // "value": "[concat(toLower(parameters('namePrefix')), uniqueString(resourceGroup().id))]"
+                                // }
+                           }
+                         }
+                       }
+                     ]
+                   }`,
+                "id");
+            const expectedErrors = [
+                new UnrecognizedUserFunctionIssue(new Language.Span(20, 4), "contoso", "blah")
+            ];
+            return dt.errors.then((errors: Language.Issue[]) => {
+                assert.deepStrictEqual(errors, expectedErrors);
+            });
+        });
+
+        test("with one recognized user function referenced in deployment template", () => {
+            const dt = new DeploymentTemplate(
+                `{
+                 "name": "[contoso.uniqueName('prefix')]",
+                 "functions": [
+                    {
+                      "namespace": "contoso",
+                      "members": {
+                        "uniqueName": {
+                          "parameters": [
+                            {
+                              "name": "namePrefix",
+                              "type": "string"
+                            }
+                          ],
+                          //asdf
+                          //"output": {
+                            //  "type": "string",
+                            //"value": "[concat(toLower(parameters('namePrefix')), uniqueString(resourceGroup().id))]"
+                            //}
+                        }
+                      }
+                    }
+                  ]
+                }`,
+                "id");
+            const expectedErrors = [
+            ];
+            return dt.errors.then((errors: Language.Issue[]) => {
+                assert.deepStrictEqual(errors, expectedErrors);
+            });
+        });
+
+        test("with one recognized user function where function name matches a built-in function", () => {
+            const dt = new DeploymentTemplate(
+                `{
+                 "name": "[contoso.reference()]",
+                 "functions": [
+                    {
+                      "namespace": "contoso",
+                      "members": {
+                        "uniqueName": {
+                          "parameters": [
+                            {
+                              "name": "reference",
+                              "type": "string"
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }`,
+                "id");
+            const expectedErrors = [
+                new UnrecognizedUserFunctionIssue(new Language.Span(20, 9), "contoso", "reference")
+            ];
+            return dt.errors.then((errors: Language.Issue[]) => {
+                assert.deepStrictEqual(errors, expectedErrors);
+            });
+        });
+
+        test("can't reference variables from within function", () => { //asdf
+            const dt = new DeploymentTemplate(
+                `{ "name": \"[contoso.blah('prefix')]\",
+                    "functions": [
+                       {
+                         "namespace": "contoso",
+                         "members": {
+                           "foo": {
+                              "output": {
+                                 "type": "string",
+                               "value": "[concat(variables('nope'))]"
+                              }
+                           }
+                         }
+                       }
+                     ]
+                   }`,
+                "id");
+            const expectedErrors = [
+                new InvalidFunctionContextIssue(new Language.Span(20, 4), "variables", "Cannot reference 'variables' inside of a function")
             ];
             return dt.errors.then((errors: Language.Issue[]) => {
                 assert.deepStrictEqual(errors, expectedErrors);

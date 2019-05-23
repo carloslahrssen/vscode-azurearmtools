@@ -2,30 +2,43 @@
 // Copyright (c) Microsoft Corporation.  All rights reserved.
 // ----------------------------------------------------------------------------
 
-// tslint:disable:no-use-before-declare
-
 import * as assert from "assert";
-
+import { AzureRMAssets, FunctionsMetadata } from "./AzureRMAssets";
+import { FunctionDefinition } from "./FunctionDefinition";
+import { Histogram } from "./Histogram";
 import * as Json from "./JSON";
 import * as language from "./Language";
+import { NamespaceDefinition } from "./NamespaceDefinition";
+import { ParameterDefinition } from "./ParameterDefinition";
+import { PositionContext } from "./PositionContext";
 import * as Reference from "./Reference";
+import { ITemplateScope, TemplateScope, TemplateScopeContext } from "./TemplateScope";
 import * as TLE from "./TLE";
 import * as Utilities from "./Utilities";
 
-import { AzureRMAssets, FunctionsMetadata } from "./AzureRMAssets";
-import { Histogram } from "./Histogram";
-import { ParameterDefinition } from "./ParameterDefinition";
-import { PositionContext } from "./PositionContext";
-
 export class DeploymentTemplate {
+    // Parse result for the template document as a whole
     private _jsonParseResult: Json.ParseResult;
+
+    // The top-level parameters and variables (as opposed to those in user functions and deployment resources)
+    private _topLevelScope: ITemplateScope | null;
+
+    // A list of the tokens represented every quoted string in the template
     private _jsonQuotedStringTokens: Json.Token[];
-    private _quotedStringToTleParseResultMap: { [key: string]: TLE.ParseResult };
+
+    // A list of parse results for every quoted string in the template
     private _tleParseResults: TLE.ParseResult[];
-    private _parameterDefinitions: ParameterDefinition[];
-    private _variableDefinitions: Json.Property[];
+
+    private _quotedStringToTleParseResultMap: { [key: string]: TLE.ParseResult };
+
+    // The "functions" section (which is an array of namespace definitions)
+    // https://docs.microsoft.com/en-us/azure/azure-resource-manager/resource-group-authoring-templates#functions
+    private _namespaceDefinitions: NamespaceDefinition[];
+
+    // All errors and warnings in the template
     private _errors: Promise<language.Issue[]>;
     private _warnings: language.Issue[];
+
     private _functionCounts: Histogram;
     private _schemaUri: string;
 
@@ -41,6 +54,11 @@ export class DeploymentTemplate {
         assert(_documentId);
 
         this._jsonParseResult = Json.parse(_documentText);
+        this._topLevelScope = new TemplateScope(Json.asObjectValue(this.jsonParseResult.value));
+    }
+
+    public get topLevelScope(): ITemplateScope {
+        return this._topLevelScope;
     }
 
     private get jsonQuotedStringTokens(): Json.Token[] {
@@ -60,11 +78,33 @@ export class DeploymentTemplate {
         if (this._quotedStringToTleParseResultMap === undefined) {
             this._quotedStringToTleParseResultMap = {};
 
-            for (let jsonQuotedStringToken of this.jsonQuotedStringTokens) {
-                let tleParseResult: TLE.ParseResult = TLE.Parser.parse(jsonQuotedStringToken.toString());
-                if (tleParseResult) {
+            let visitor = new StringVisitor(stringValue => {
+                let jsonQuotedStringToken = this.getJSONTokenAtDocumentCharacterIndex(stringValue.span.startIndex);
+                assert(!!jsonQuotedStringToken, "Expected token");
+                assert(jsonQuotedStringToken.type === Json.TokenType.QuotedString, "Expected quoted string token");
+
+                let tleParseResult: TLE.ParseResult = TLE.Parser.parse(
+                    jsonQuotedStringToken.toString(),
+                    new TemplateScopeContext(this, stringValue)); // asdf
+                if (tleParseResult) { // asdf: can't map by string value, they might be in different scopes
                     this._quotedStringToTleParseResultMap[jsonQuotedStringToken.toString()] = tleParseResult;
                 }
+            });
+
+            if (this.jsonParseResult.value) {
+                this.jsonParseResult.value.accept(visitor);
+            }
+
+            for (let jsonQuotedStringToken of this.jsonQuotedStringTokens) {
+                let parseResult = this._quotedStringToTleParseResultMap[jsonQuotedStringToken.toString()];
+                assert(!!parseResult, "Missed a quoted string token");
+
+                // let jsonValue = this.getJSONValueAtDocumentCharacterIndex(jsonQuotedStringToken.span.startIndex);
+                // assert(jsonValue);
+                // let tleParseResult: TLE.ParseResult = TLE.Parser.parse(jsonQuotedStringToken.toString(), new Scope(this, jsonValue)); // asdf
+                // if (tleParseResult) {
+                //     this._quotedStringToTleParseResultMap[jsonQuotedStringToken.toString()] = tleParseResult;
+                // }
             }
         }
         return this._quotedStringToTleParseResultMap;
@@ -130,12 +170,17 @@ export class DeploymentTemplate {
                         }
 
                         const tleExpression: TLE.Value = tleParseResult.expression;
-                        const tleUndefinedParameterAndVariableVisitor = TLE.UndefinedParameterAndVariableVisitor.visit(tleExpression, this);
-                        for (const error of tleUndefinedParameterAndVariableVisitor.errors) {
-                            parseErrors.push(error.translate(jsonTokenStartIndex));
-                        }
+                        //asdf
+                        // const tleUndefinedParameterAndVariableVisitor =
+                        //     TLE.UndefinedParameterAndVariableVisitor.visit(
+                        //         tleExpression,
+                        //         this,
+                        //         new Scope(jsonQuotedStringToken)); //asdf
+                        // for (const error of tleUndefinedParameterAndVariableVisitor.errors) {
+                        //     parseErrors.push(error.translate(jsonTokenStartIndex));
+                        // }
 
-                        const tleUnrecognizedFunctionVisitor = TLE.UnrecognizedFunctionVisitor.visit(tleExpression, functions);
+                        const tleUnrecognizedFunctionVisitor = TLE.UnrecognizedFunctionVisitor.visit(this, tleExpression, functions);
                         for (const error of tleUnrecognizedFunctionVisitor.errors) {
                             parseErrors.push(error.translate(jsonTokenStartIndex));
                         }
@@ -156,13 +201,16 @@ export class DeploymentTemplate {
                         if (deploymentTemplateObject) {
                             const variablesObject: Json.ObjectValue = Json.asObjectValue(deploymentTemplateObject.getPropertyValue("variables"));
                             if (variablesObject) {
-                                const referenceInVariablesFinder = new ReferenceInVariableDefinitionJSONVisitor(this);
-                                variablesObject.accept(referenceInVariablesFinder);
+                                //asdf
+                                // const referenceInVariablesFinder = new ReferenceInVariableDefinitionJSONVisitor(
+                                //     this,
+                                //     new Scope(variablesObject)); //asdf
+                                // variablesObject.accept(referenceInVariablesFinder);
 
-                                for (const referenceSpan of referenceInVariablesFinder.referenceSpans) {
-                                    parseErrors.push(
-                                        new language.Issue(referenceSpan, "reference() cannot be invoked inside of a variable definition."));
-                                }
+                                // for (const referenceSpan of referenceInVariablesFinder.referenceSpans) {
+                                //     parseErrors.push(
+                                //         new language.Issue(referenceSpan, "reference() cannot be invoked inside of a variable definition."));
+                                // }
                             }
                         }
                     }
@@ -178,6 +226,7 @@ export class DeploymentTemplate {
     }
 
     public get warnings(): language.Issue[] {
+        // asdf do for all subscopes (user funcs, sub deployments)
         if (this._warnings === undefined) {
             this._warnings = [];
 
@@ -197,6 +246,18 @@ export class DeploymentTemplate {
                         new language.Issue(variableDefinition.name.span, `The variable '${variableDefinition.name.toString()}' is never used.`));
                 }
             }
+
+            //asdf
+            // for (const nsDefinition of this.namespaceDefinitions) {
+            //     this._warnings.push(new language.Issue(nsDefinition.name.span, `namespace ${nsDefinition.name.toString()}`));
+
+            //     for (const funcDefinition of nsDefinition.members) {
+            //         this._warnings.push(new language.Issue(
+            //             funcDefinition.name.span,
+            //             `func ${funcDefinition.name.toString()}`)
+            //         );
+            //     }
+            // }
         }
         return this._warnings;
     }
@@ -240,96 +301,79 @@ export class DeploymentTemplate {
         return this._jsonParseResult.maxCharacterIndex;
     }
 
-    public get parameterDefinitions(): ParameterDefinition[] {
-        if (this._parameterDefinitions === undefined) {
-            this._parameterDefinitions = [];
+    // public get parameterDefinitions(): ParameterDefinition[] {
+    //     return this._topLevelScope.parameterDefinitions;
+    // }
+
+    // public get variableDefinitions(): Json.Property[] {
+    //     return this._topLevelScope.variableDefinitions;
+    // }
+
+    public get namespaceDefinitions(): NamespaceDefinition[] {
+        if (!this._namespaceDefinitions) {
+            this._namespaceDefinitions = [];
 
             const value: Json.ObjectValue = Json.asObjectValue(this._jsonParseResult.value);
             if (value) {
-                const parameters: Json.ObjectValue = Json.asObjectValue(value.getPropertyValue("parameters"));
-                if (parameters) {
-                    for (const parameter of parameters.properties) {
-                        this._parameterDefinitions.push(new ParameterDefinition(parameter));
+                const namespaces: Json.ArrayValue = Json.asArrayValue(value.getPropertyValue("functions"));
+                if (namespaces) {
+                    for (const member of namespaces.elements) {
+                        let valueObject = Json.asObjectValue(member);
+                        if (valueObject) {
+                            this._namespaceDefinitions.push(new NamespaceDefinition(valueObject));
+                        }
                     }
                 }
             }
         }
-        return this._parameterDefinitions;
+        return this._namespaceDefinitions;
     }
 
-    public get variableDefinitions(): Json.Property[] {
-        if (this._variableDefinitions === undefined) {
-            this._variableDefinitions = [];
-
-            const value: Json.ObjectValue = Json.asObjectValue(this._jsonParseResult.value);
-            if (value) {
-                const variables: Json.ObjectValue = Json.asObjectValue(value.getPropertyValue("variables"));
-                if (variables) {
-                    this._variableDefinitions = variables.properties;
-                }
-            }
-        }
-        return this._variableDefinitions;
-    }
-
-    public getParameterDefinition(parameterName: string): ParameterDefinition {
+    public getParameterDefinition(parameterName: string): ParameterDefinition | null {
         assert(parameterName, "parameterName cannot be null, undefined, or empty");
 
         const unquotedParameterName = Utilities.unquote(parameterName);
-        let result: ParameterDefinition = null;
+        let parameterNameLC = unquotedParameterName.toLowerCase();
 
-        if (this.parameterDefinitions) {
-            for (const pd of this.parameterDefinitions) {
-                if (pd.name.toString() === unquotedParameterName) {
-                    result = pd;
-                    break;
-                }
-            }
-
-            if (!result) {
-                for (const pd of this.parameterDefinitions) {
-                    if (pd.name.toString().toLowerCase() === unquotedParameterName.toLowerCase()) {
-                        result = pd;
-                        break;
-                    }
-                }
-            }
-        }
-
-        return result;
+        assert(!!this.parameterDefinitions);
+        let result = this.parameterDefinitions.find(pd => pd.name && pd.name.toString().toLowerCase() === parameterNameLC);
+        return result ? result : null;
     }
 
-    public getVariableDefinition(variableName: string): Json.Property {
+    public getNamespaceDefinition(namespaceName: string): NamespaceDefinition | undefined {
+        assert(!!namespaceName, "namespaceName cannot be null, undefined, or empty");
+        let namespaceNameLC = namespaceName.toLowerCase();
+        return this.namespaceDefinitions.find(nd => nd.name && nd.name.toString().toLowerCase() === namespaceNameLC);
+    }
+
+    public getFunctionDefinition(namespaceName: string, functionName: string): FunctionDefinition | null {
+        assert(!!functionName, "functionName cannot be null, undefined, or empty");
+        let nd = this.getNamespaceDefinition(namespaceName);
+        if (nd) {
+            let result = nd.getFunctionDefinition(functionName);
+            return result ? result : null;
+        }
+
+        return null;
+    }
+
+    public getVariableDefinition(variableName: string): Json.Property | undefined {
         assert(variableName, "variableName cannot be null, undefined, or empty");
 
         const unquotedVariableName = Utilities.unquote(variableName);
-        let result: Json.Property = null;
+        const variableNameLC = unquotedVariableName.toLowerCase();
 
-        if (this.variableDefinitions) {
-            for (const vd of this.variableDefinitions) {
-                if (vd.name.toString() === unquotedVariableName) {
-                    result = vd;
-                    break;
-                }
-            }
-
-            if (!result) {
-                for (const vd of this.variableDefinitions) {
-                    if (vd.name.toString().toLowerCase() === unquotedVariableName.toLowerCase()) {
-                        result = vd;
-                        break;
-                    }
-                }
-            }
-        }
-
-        return result;
+        assert(!!this.variableDefinitions);
+        let result = this.variableDefinitions.find(vd => vd.name && vd.name.toString().toLowerCase() === variableNameLC);
+        return result ? result : null;
     }
+
+    // TODO: findNamespaceDefinitionsWithPrefix
 
     public getVariableDefinitionFromFunction(tleFunction: TLE.FunctionValue): Json.Property {
         let result: Json.Property = null;
 
-        if (tleFunction && tleFunction.nameToken.stringValue === "variables") {
+        if (tleFunction && tleFunction.isBuiltin("variables")) { // asdf
             const variableName: TLE.StringValue = TLE.asStringValue(tleFunction.argumentExpressions[0]);
             if (variableName) {
                 result = this.getVariableDefinition(variableName.toString());
@@ -497,10 +541,20 @@ class ReferenceInVariableDefinitionTLEVisitor extends TLE.Visitor {
     }
 
     public visitFunction(functionValue: TLE.FunctionValue): void {
-        if (functionValue && functionValue.nameToken.stringValue === "reference") {
+        if (functionValue && functionValue.doesNameMatch("", "reference")) {
             this._referenceSpans.push(functionValue.nameToken.span);
         }
 
         super.visitFunction(functionValue);
+    }
+}
+
+class StringVisitor extends Json.Visitor {
+    constructor(private _visitStringValue: (stringValue: Json.StringValue) => void) {
+        super();
+    }
+
+    public visitStringValue(stringValue: Json.StringValue): void {
+        this._visitStringValue(stringValue);
     }
 }

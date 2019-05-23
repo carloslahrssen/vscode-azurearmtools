@@ -7,6 +7,7 @@
 import * as assert from "assert";
 import { Completion, DeploymentTemplate, Hover, Json, Language, ParameterDefinition, PositionContext, TLE, Utilities } from "../extension.bundle";
 import * as jsonTest from "./JSON.test";
+import { FakeScope } from "./fakeScope";
 
 suite("PositionContext", () => {
     suite("fromDocumentLineAndColumnIndexes(DeploymentTemplate,number,number)", () => {
@@ -191,7 +192,7 @@ suite("PositionContext", () => {
         test("with characterIndex at the start of a non-TLE QuotedString", () => {
             let dt = new DeploymentTemplate("{ 'a': 'A', 'b': \"[concat('B')]\" }", "id");
             let pc = dt.getContextFromDocumentCharacterIndex(2);
-            assert.deepStrictEqual(TLE.Parser.parse("'a'"), pc.tleParseResult);
+            assert.deepStrictEqual(TLE.Parser.parse("'a'", new FakeScope()), pc.tleParseResult);
         });
 
         test("with characterIndex at the start of a closed TLE QuotedString", () => {

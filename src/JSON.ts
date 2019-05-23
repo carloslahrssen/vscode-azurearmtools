@@ -90,6 +90,10 @@ export class Token extends Segment {
     public toString(): string {
         return utilities.getCombinedText(this._basicTokens);
     }
+
+    public get debuggerDisplay(): string {
+        return this.toString();
+    }
 }
 
 export function LeftCurlyBracket(startIndex: number): Token {
@@ -564,7 +568,7 @@ export class ObjectValue extends Value {
      * Get the property value for the provided property name. If no property exists with the
      * provided name, then undefined will be returned.
      */
-    public getPropertyValue(propertyName: string): Value {
+    public getPropertyValue(propertyName: string): Value | undefined {
         return this.propertyMap[propertyName];
     }
 
@@ -924,6 +928,50 @@ export class ParseResult {
     }
 
     public getValueAtCharacterIndex(characterIndex: number): Value {
+        assert(0 <= characterIndex, `characterIndex (${characterIndex}) cannot be negative.`);
+
+        let result: Value = null;
+
+        if (this.value.span.contains(characterIndex, true)) {
+            let current: Value = this.value;
+
+            while (result === null) {
+                const currentValue: Value = current;
+
+                if (currentValue instanceof Property) {
+                    if (currentValue.name && currentValue.name.span.contains(characterIndex, true)) {
+                        current = currentValue.name;
+                    } else if (currentValue.value && currentValue.value.span.contains(characterIndex, true)) {
+                        current = currentValue.value;
+                    }
+                } else if (currentValue instanceof ObjectValue) {
+                    if (currentValue.properties) {
+                        for (const property of currentValue.properties) {
+                            if (property && property.span.contains(characterIndex, true)) {
+                                current = property;
+                            }
+                        }
+                    }
+                } else if (currentValue instanceof ArrayValue) {
+                    if (currentValue.elements) {
+                        for (const element of currentValue.elements) {
+                            if (element && element.span.contains(characterIndex, true)) {
+                                current = element;
+                            }
+                        }
+                    }
+                }
+
+                if (current === currentValue) {
+                    result = current;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    public getScopeAtCharacterIndex(characterIndex: number): Value {
         assert(0 <= characterIndex, `characterIndex (${characterIndex}) cannot be negative.`);
 
         let result: Value = null;

@@ -33,7 +33,7 @@ export { Language };
 export { ParameterDefinition } from "./src/ParameterDefinition";
 import * as Reference from "./src/Reference";
 export { Reference };
-export { UnrecognizedFunctionIssue } from "./src/UnrecognizedFunctionIssue";
+export { UnrecognizedBuiltinFunctionIssue as UnrecognizedFunctionIssue } from "./src/UnrecognizedFunctionIssue";
 export { Duration } from './src/Duration';
 import * as Hover from "./src/Hover";
 export { Hover };
